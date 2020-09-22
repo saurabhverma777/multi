@@ -1,12 +1,13 @@
 import paramiko
+import sys, traceback
 import argparse
 from threading import Thread
 from threading import Lock,RLock
-from Queue import Queue
+from queue import Queue
 import io
 import hashlib
 import socket
-from urllib2 import Request, urlopen, URLError, HTTPError
+#from urllib3 import Request, urlopen, URLError, HTTPError
 
 # Signal Handling
 # Thread Reaping
@@ -29,9 +30,12 @@ class Exec:
       self.servers = self.calculate_servers()
       self.command = self.args.command
       self.combine = self.args.combine
-
+      if '@' in self.command: 
+          filePath = self.command.split('@')[1]
+          with open(filePath) as f:
+              self.command = f.read()
       for server in self.servers:
-        t_p.add_task(self.run_command,server,self.command,self.timeout)
+        t_p.add_task(self.run_command, server, self.command, self.timeout, self.args.user, self.args.key)
 
       t_p.wait_completion()
       if(self.combine):
@@ -60,10 +64,10 @@ class Exec:
       print("Exception occured while reading the File {0} : {1}".format(inventory,e))
 
 
-  def ssh_connection(self,server,timeout):
+  def ssh_connection(self, server, timeout, user, key_path):
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(server,timeout=float(timeout))
+    ssh.connect(server,timeout=float(timeout), username=user, key_filename=key_path)
     return(ssh)
 
   def execute_command(self,command, conn, server):
@@ -75,7 +79,7 @@ class Exec:
 
   def store_output(self,server,resp):
     m = hashlib.md5()
-    m.update(resp)
+    m.update(resp.encode('utf-8'))
     k = m.hexdigest()
     if k not in self.output.keys():
       Exec.lock.acquire()
@@ -86,19 +90,19 @@ class Exec:
       self.output[k][0].append(server)
       Exec.lock.release()
 
-  def run_command(self,server,command,timeout):
+  def run_command(self, server, command, timeout, user, key_path):
     try:
-      conn = self.ssh_connection(server,timeout)
+      conn = self.ssh_connection(server,timeout, user, key_path)
     except Exception as e:
       Exec.t_lock.acquire()
-      print "#### {0} ####".format(server)
+      print("#### {0} ####".format(server))
       print("Exception in ssh connect to server {1}: {0}".format(e,server))
       Exec.t_lock.release()
     else:
       output= self.execute_command(command,conn,server)
 
       Exec.t_lock.acquire()
-      print "#### {0} ####".format(server)
+      print("#### {0} ####".format(server))
       print(output)
       Exec.t_lock.release()
 
@@ -201,7 +205,7 @@ class Worker(Thread):
       func, args, kargs = self.tasks.get()
       try:
         func(*args,**kargs)
-      except Exception, e:
+      except Exception as e:
         print(e)
       self.tasks.task_done()
 
@@ -234,8 +238,8 @@ def parse_args():
     parser_upload.add_argument('--remote_path','-r', help="Path on the remote server", required=True)
     parser_upload.add_argument('--user','-u', help="SSH User to connect to", required=False)
     parser_exec.add_argument('--user','-u', help="SSH User to connect to", required=False)
-    parser_upload.add_argument('-i', help="SSH private key file path", required=False)
-    parser_exec.add_argument('-i', help="SSH private key file path", required=False)
+    parser_upload.add_argument('--key', '-i', help="SSH private key file path", required=False)
+    parser_exec.add_argument('--key', '-i', help="SSH private key file path", required=False)
     parser_curl.add_argument('--urls','-u', help="Comma seperated list of hostnames")
     parser_curl.add_argument('-t', '--timeout', help="Curl Download Timeout")
     args = parser.parse_args()
@@ -246,8 +250,15 @@ if __name__ == "__main__":
   args = parse_args()
   task = args.task
   if ( task == "exec"):
-    mexec = Exec(args)
-    mexec.run()
+    try:   
+      mexec = Exec(args)
+      mexec.run()
+    except Exception:
+      print("Exception in user code:")
+      print("-"*60)
+      traceback.print_exc(file=sys.stdout)
+      print("-"*60)
+
   if ( task == 'curl'):
     curl = Curl(args)
     curl.run()
